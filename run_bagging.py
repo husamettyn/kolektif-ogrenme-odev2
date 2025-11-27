@@ -10,6 +10,7 @@ Bu script:
 
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.ensemble import BaggingClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import (
@@ -142,100 +143,6 @@ def evaluate_model(model, X_test, y_test):
     return metrics
 
 
-
-
-def plot_error_summary(metrics, title, output_path, color):
-    """Her veri seti için hata dağılımı ve karışıklıkları gösterir."""
-    y_true = metrics['y_true']
-    errors = metrics['errors']
-    abs_errors = metrics['abs_errors']
-    years = sorted(list(set(y_true)))
-    
-    year_mae = []
-    for year in years:
-        mask = y_true == year
-        year_mae.append(np.mean(np.abs(errors[mask])) if mask.sum() > 0 else 0)
-    
-    sorted_abs = np.sort(abs_errors)
-    cum_ratio = np.linspace(0, 1, len(sorted_abs))
-    top_confusions = get_top_confusions(metrics, top_n=6)
-    
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    
-    axes[0, 0].plot(years, year_mae, color=color, marker='o')
-    axes[0, 0].fill_between(years, year_mae, color=color, alpha=0.15)
-    axes[0, 0].set_title('Yıllara Göre Ortalama Mutlak Hata (MAE)')
-    axes[0, 0].set_xlabel('Yıl')
-    axes[0, 0].set_ylabel('MAE')
-    axes[0, 0].set_xticks(years[::2])
-    axes[0, 0].grid(alpha=0.3)
-    
-    bins = np.arange(0, max(10, int(abs_errors.max()) + 2))
-    axes[0, 1].hist(abs_errors, bins=bins, color=color, edgecolor='black', alpha=0.75)
-    axes[0, 1].set_title('Mutlak Hata Dağılımı')
-    axes[0, 1].set_xlabel('|Tahmin - Gerçek|')
-    axes[0, 1].set_ylabel('Frekans')
-    axes[0, 1].grid(axis='y', alpha=0.3)
-    
-    axes[1, 0].plot(sorted_abs, cum_ratio, color=color, linewidth=2)
-    axes[1, 0].set_title('Kümülatif Mutlak Hata Eğrisi')
-    axes[1, 0].set_xlabel('|Hata|')
-    axes[1, 0].set_ylabel('Kümülatif Oran')
-    axes[1, 0].grid(alpha=0.3)
-    
-    if top_confusions:
-        pairs = [f"{item['actual']} → {item['predicted']}" for item in top_confusions]
-        counts = [item['count'] for item in top_confusions]
-        axes[1, 1].barh(pairs[::-1], counts[::-1], color=color, alpha=0.85)
-        axes[1, 1].set_title('En Çok Karıştırılan Yıl Çiftleri')
-        axes[1, 1].set_xlabel('Adet')
-        axes[1, 1].grid(axis='x', alpha=0.2)
-    else:
-        axes[1, 1].text(0.5, 0.5, "Önemli karışıklık yok", ha='center', va='center')
-        axes[1, 1].set_axis_off()
-    
-    plt.suptitle(title, fontsize=14, y=0.98)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def plot_dataset_error_overview(all_results, output_dir, embed_names):
-    """Veri setleri arasında hata dağılımını karşılaştırır."""
-    datasets = list(all_results.keys())
-    mae_values = [all_results[ds]['metrics']['mae'] for ds in datasets]
-    abs_error_lists = [all_results[ds]['metrics']['abs_errors'] for ds in datasets]
-    
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    colors = [DATASET_PALETTE[ds] for ds in datasets]
-    
-    axes[0].bar(
-        [embed_names[ds] for ds in datasets],
-        mae_values,
-        color=colors,
-        edgecolor='black',
-        alpha=0.85
-    )
-    axes[0].set_title('Verisetlerine Göre MAE')
-    axes[0].set_ylabel('MAE')
-    axes[0].grid(axis='y', alpha=0.3)
-    
-    parts = axes[1].violinplot(abs_error_lists, showmeans=True, showmedians=True)
-    for idx, body in enumerate(parts['bodies']):
-        body.set_facecolor(colors[idx])
-        body.set_edgecolor('black')
-        body.set_alpha(0.6)
-    axes[1].set_xticks(np.arange(1, len(datasets)+1))
-    axes[1].set_xticklabels([embed_names[ds] for ds in datasets])
-    axes[1].set_title('Mutlak Hata Dağılımı (Violin)')
-    axes[1].set_ylabel('|Tahmin - Gerçek|')
-    axes[1].grid(axis='y', alpha=0.3)
-    
-    plt.suptitle('Verisetleri Hata Özeti', fontsize=14, y=0.98)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "dataset_error_overview.png"), dpi=150, bbox_inches='tight')
-    plt.close()
-
 def save_results(all_results, output_dir):
     """
     Tüm sonuçları kaydeder.
@@ -300,48 +207,6 @@ def save_results(all_results, output_dir):
     
     with open(os.path.join(output_dir, "results_report.md"), "w", encoding="utf-8") as f:
         f.write(comparison_text)
-
-
-def plot_comparison(all_results, output_dir):
-    """
-    Tüm modellerin karşılaştırma grafiğini oluşturur.
-    
-    Args:
-        all_results: Tüm model sonuçları
-        output_dir: Çıktı dizini
-    """
-    embed_types = list(all_results.keys())
-    metrics_names = ['accuracy', 'f1_macro', 'f1_weighted', 'precision_macro', 'recall_macro']
-    metrics_labels = ['Accuracy', 'F1 (Macro)', 'F1 (Weighted)', 'Precision', 'Recall']
-    
-    x = np.arange(len(embed_types))
-    width = 0.15
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    colors = ['#2ecc71', '#3498db', '#9b59b6', '#e74c3c', '#f39c12']
-    
-    for i, (metric_name, metric_label, color) in enumerate(zip(metrics_names, metrics_labels, colors)):
-        values = [all_results[et]['metrics'][metric_name] for et in embed_types]
-        bars = ax.bar(x + i * width, values, width, label=metric_label, color=color)
-        
-        # Değerleri bar'ların üstüne yaz
-        for bar, val in zip(bars, values):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                   f'{val:.3f}', ha='center', va='bottom', fontsize=8, rotation=90)
-    
-    ax.set_xlabel('Veriseti', fontsize=12)
-    ax.set_ylabel('Skor', fontsize=12)
-    ax.set_title('Bagging - Veriseti Karşılaştırması', fontsize=14)
-    ax.set_xticks(x + width * 2)
-    ax.set_xticklabels(['Başlık', 'Özet', 'Birleştirilmiş'])
-    ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
-    ax.set_ylim(0, 1.15)
-    ax.grid(axis='y', alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "comparison.png"), dpi=150, bbox_inches='tight')
-    plt.close()
 
 
 def main():
@@ -432,8 +297,8 @@ def main():
     print(f"{'='*60}")
     
     save_results(all_results, output_dir)
-    plot_comparison(all_results, output_dir)
-    plot_dataset_error_overview(all_results, output_dir, embed_names)
+    plot_comparison(all_results, output_dir, embed_names, "Bagging")
+    plot_dataset_error_overview(all_results, output_dir, embed_names, DATASET_PALETTE)
     
     print(f"\n✓ Tüm sonuçlar kaydedildi: {output_dir}/")
     
