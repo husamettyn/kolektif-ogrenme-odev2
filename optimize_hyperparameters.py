@@ -7,33 +7,112 @@ Bu script:
 3. En iyi parametreleri ve performansı raporlar
 """
 
+import argparse
+import json
 import os
+from datetime import datetime
+
 import numpy as np
 from sklearn.ensemble import BaggingClassifier, RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.metrics import accuracy_score, f1_score
-from datetime import datetime
-import json
+from sklearn.model_selection import GridSearchCV
+from sklearn.tree import DecisionTreeClassifier
 
 RANDOM_SEED = 42
 DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
-CV_FOLDS = 3  # Cross-validation fold sayısı
-N_JOBS = -1
+DEFAULT_CV_FOLDS = 3  # Cross-validation varsayılanı
+N_JOBS = 10
+
+EMBED_TYPES = ['title', 'abstract', 'concat']
+EMBED_NAMES = {'title': 'Başlık', 'abstract': 'Özet', 'concat': 'Birleştirilmiş'}
+
+DEFAULT_PARAM_GRIDS = {
+    'random_forest': {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [10, 20, 30]
+    },
+    'bagging': {
+        'n_estimators': [50, 100, 200],
+        'max_samples': [0.5, 0.7, 1.0]
+    },
+    'random_subspace': {
+        'n_estimators': [50, 100, 200],
+        'max_features': [0.3, 0.5, 0.7]
+    }
+}
+
+QUICK_PARAM_GRIDS = {
+    'random_forest': {
+        'n_estimators': [50, 100],
+        'max_depth': [10, 20]
+    },
+    'bagging': {
+        'n_estimators': [50, 100],
+        'max_samples': [0.5, 0.7]
+    },
+    'random_subspace': {
+        'n_estimators': [50, 100],
+        'max_features': [0.3, 0.5]
+    }
+}
 
 
-def load_embedding_data(embed_type):
+def parse_args():
+    """Komut satırı argümanlarını okur."""
+    parser = argparse.ArgumentParser(
+        description="Bagging, Random Subspace ve Random Forest için hiperparametre optimizasyonu"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["full", "quick"],
+        default="full",
+        help="quick: daha küçük grid ve varsayılan olarak daha az CV fold'u kullanır"
+    )
+    parser.add_argument(
+        "--cv-folds",
+        type=int,
+        default=DEFAULT_CV_FOLDS,
+        help="Grid Search için fold sayısı. quick modda belirtilmezse 2'ye düşer."
+    )
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=EMBED_TYPES,
+        default=EMBED_TYPES,
+        help="Hangi embedding setleri üzerinde çalışılacağını seçer"
+    )
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        choices=["random_forest", "bagging", "random_subspace"],
+        default=["random_forest", "bagging", "random_subspace"],
+        help="Çalıştırılacak optimizasyon yöntemleri"
+    )
+    parser.add_argument(
+        "--dataset-dir",
+        default=DATASET_DIR,
+        help="Embedding .npz dosyalarının bulunduğu dizin"
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        default=ARTIFACTS_DIR,
+        help="Çıktı dosyalarının kaydedileceği dizin"
+    )
+    return parser.parse_args()
+
+
+def load_embedding_data(embed_type, dataset_dir):
     """Embedding verisetini yükler."""
-    train_file = os.path.join(DATASET_DIR, f"train_{embed_type}_embeddings.npz")
-    test_file = os.path.join(DATASET_DIR, f"test_{embed_type}_embeddings.npz")
+    train_file = os.path.join(dataset_dir, f"train_{embed_type}_embeddings.npz")
+    test_file = os.path.join(dataset_dir, f"test_{embed_type}_embeddings.npz")
     train_data = np.load(train_file)
     test_data = np.load(test_file)
     return (train_data['embeddings'], train_data['years'],
             test_data['embeddings'], test_data['years'])
 
 
-def optimize_random_forest(X_train, y_train, X_test, y_test):
+def optimize_random_forest(X_train, y_train, X_test, y_test, cv_folds, param_grid):
     """
     Random Forest hiperparametre optimizasyonu.
     Optimize edilen parametreler: n_estimators, max_depth
@@ -42,18 +121,13 @@ def optimize_random_forest(X_train, y_train, X_test, y_test):
     print("RANDOM FOREST OPTİMİZASYONU")
     print("="*50)
     
-    param_grid = {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [10, 20, 30, None]
-    }
-    
     model = RandomForestClassifier(random_state=RANDOM_SEED, n_jobs=N_JOBS)
     
-    print(f"Grid Search başlatılıyor... (CV={CV_FOLDS})")
+    print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
     
     grid_search = GridSearchCV(
-        model, param_grid, cv=CV_FOLDS, scoring='accuracy',
+        model, param_grid, cv=cv_folds, scoring='accuracy',
         verbose=2, n_jobs=1  # Model zaten paralel
     )
     grid_search.fit(X_train, y_train)
@@ -92,7 +166,7 @@ def optimize_random_forest(X_train, y_train, X_test, y_test):
     return results
 
 
-def optimize_bagging(X_train, y_train, X_test, y_test):
+def optimize_bagging(X_train, y_train, X_test, y_test, cv_folds, param_grid):
     """
     Bagging hiperparametre optimizasyonu.
     Optimize edilen parametreler: n_estimators, max_samples
@@ -101,19 +175,14 @@ def optimize_bagging(X_train, y_train, X_test, y_test):
     print("BAGGING OPTİMİZASYONU")
     print("="*50)
     
-    param_grid = {
-        'n_estimators': [50, 100, 200],
-        'max_samples': [0.5, 0.7, 1.0]
-    }
-    
     base = DecisionTreeClassifier(random_state=RANDOM_SEED)
     model = BaggingClassifier(estimator=base, random_state=RANDOM_SEED, n_jobs=N_JOBS)
     
-    print(f"Grid Search başlatılıyor... (CV={CV_FOLDS})")
+    print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
     
     grid_search = GridSearchCV(
-        model, param_grid, cv=CV_FOLDS, scoring='accuracy', verbose=2, n_jobs=1
+        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=2, n_jobs=1
     )
     grid_search.fit(X_train, y_train)
     
@@ -149,7 +218,7 @@ def optimize_bagging(X_train, y_train, X_test, y_test):
     return results
 
 
-def optimize_random_subspace(X_train, y_train, X_test, y_test):
+def optimize_random_subspace(X_train, y_train, X_test, y_test, cv_folds, param_grid):
     """
     Random Subspace hiperparametre optimizasyonu.
     Optimize edilen parametreler: n_estimators, max_features
@@ -158,22 +227,17 @@ def optimize_random_subspace(X_train, y_train, X_test, y_test):
     print("RANDOM SUBSPACE OPTİMİZASYONU")
     print("="*50)
     
-    param_grid = {
-        'n_estimators': [50, 100, 200],
-        'max_features': [0.3, 0.5, 0.7]
-    }
-    
     base = DecisionTreeClassifier(random_state=RANDOM_SEED)
     model = BaggingClassifier(
         estimator=base, bootstrap=False, bootstrap_features=True,
         random_state=RANDOM_SEED, n_jobs=N_JOBS
     )
     
-    print(f"Grid Search başlatılıyor... (CV={CV_FOLDS})")
+    print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
     
     grid_search = GridSearchCV(
-        model, param_grid, cv=CV_FOLDS, scoring='accuracy', verbose=2, n_jobs=1
+        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=2, n_jobs=1
     )
     grid_search.fit(X_train, y_train)
     
@@ -209,7 +273,7 @@ def optimize_random_subspace(X_train, y_train, X_test, y_test):
     return results
 
 
-def save_optimization_results(all_results, output_dir):
+def save_optimization_results(all_results, output_dir, cv_folds, selected_methods, selected_datasets):
     """Optimizasyon sonuçlarını kaydeder."""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -249,14 +313,19 @@ hiperparametre optimizasyonunun sonuçlarını içermektedir.
 
 """
     
-    for method in ['random_forest', 'bagging', 'random_subspace']:
+    for method in selected_methods:
+        if method not in all_results:
+            continue
         method_name = method.replace('_', ' ').title()
         report += f"## {method_name}\n\n"
         report += "| Veriseti | En İyi Parametreler | CV Skoru | Test Acc | Test F1 |\n"
         report += "|----------|---------------------|----------|----------|--------|\n"
         
-        for dataset in ['title', 'abstract', 'concat']:
-            r = all_results[method][dataset]
+        for dataset in selected_datasets:
+            dataset_results = all_results.get(method, {})
+            if dataset not in dataset_results:
+                continue
+            r = dataset_results[dataset]
             params_str = ", ".join([f"{k}={v}" for k, v in r['best_params'].items()])
             report += f"| {dataset} | {params_str} | {r['best_cv_score']:.4f} | {r['test_accuracy']:.4f} | {r['test_f1_macro']:.4f} |\n"
         
@@ -270,7 +339,7 @@ Bu optimizasyon sonuçlarına göre, her algoritma için önerilen hiperparametr
 ilgili run scriptlerinde kullanılabilir.
 
 **Not**: Grid Search ile {}-fold cross-validation kullanılmıştır.
-""".format(CV_FOLDS)
+""".format(cv_folds)
     
     with open(os.path.join(output_dir, "optimization_report.md"), "w", encoding="utf-8") as f:
         f.write(report)
@@ -279,61 +348,67 @@ ilgili run scriptlerinde kullanılabilir.
 
 
 def main():
+    args = parse_args()
+    selected_methods = args.methods
+    selected_datasets = args.datasets
+    param_grids = QUICK_PARAM_GRIDS if args.mode == "quick" else DEFAULT_PARAM_GRIDS
+    
+    cv_folds = args.cv_folds
+    if args.mode == "quick" and args.cv_folds == DEFAULT_CV_FOLDS:
+        cv_folds = 2
+    
     print("=" * 60)
     print("HİPERPARAMETRE OPTİMİZASYONU")
     print("=" * 60)
+    print(f"Mod: {args.mode} | CV folds: {cv_folds} | Yöntemler: {', '.join(selected_methods)}")
+    print(f"Veri setleri: {', '.join(selected_datasets)}")
     
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    output_dir = os.path.join(ARTIFACTS_DIR, f"{timestamp}_optimization")
+    output_dir = os.path.join(args.artifacts_dir, f"{timestamp}_optimization")
     
-    embed_types = ['title', 'abstract', 'concat']
-    embed_names = {'title': 'Başlık', 'abstract': 'Özet', 'concat': 'Birleştirilmiş'}
-    
-    all_results = {
-        'random_forest': {},
-        'bagging': {},
-        'random_subspace': {}
+    method_functions = {
+        'random_forest': optimize_random_forest,
+        'bagging': optimize_bagging,
+        'random_subspace': optimize_random_subspace
     }
     
-    for embed_type in embed_types:
+    all_results = {method: {} for method in selected_methods}
+    
+    for embed_type in selected_datasets:
         print(f"\n{'#'*60}")
-        print(f"# VERİSETİ: {embed_names[embed_type].upper()}")
+        print(f"# VERİSETİ: {EMBED_NAMES[embed_type].upper()}")
         print(f"{'#'*60}")
         
         print("\nVeri yükleniyor...")
-        X_train, y_train, X_test, y_test = load_embedding_data(embed_type)
-        print(f"Train: {X_train.shape}, Test: {X_test.shape}")
+        X_train, y_train, X_test, y_test = load_embedding_data(embed_type, args.dataset_dir)
+        print(f"{embed_type.upper()} - Train: {X_train.shape}, Test: {X_test.shape}")
         
-        # Random Forest
-        all_results['random_forest'][embed_type] = optimize_random_forest(
-            X_train, y_train, X_test, y_test
-        )
-        
-        # Bagging
-        all_results['bagging'][embed_type] = optimize_bagging(
-            X_train, y_train, X_test, y_test
-        )
-        
-        # Random Subspace
-        all_results['random_subspace'][embed_type] = optimize_random_subspace(
-            X_train, y_train, X_test, y_test
-        )
+        for method in selected_methods:
+            print(f"\n>>> {method.replace('_', ' ').title()} ({embed_type})")
+            func = method_functions[method]
+            all_results[method][embed_type] = func(
+                X_train, y_train, X_test, y_test, cv_folds, param_grids[method]
+            )
     
     # Sonuçları kaydet
-    save_optimization_results(all_results, output_dir)
+    save_optimization_results(
+        all_results, output_dir, cv_folds, selected_methods, selected_datasets
+    )
     
     # Özet yazdır
     print("\n" + "=" * 60)
     print("OPTİMİZASYON SONUÇLARI ÖZETİ")
     print("=" * 60)
     
-    for method in ['random_forest', 'bagging', 'random_subspace']:
+    for method in selected_methods:
         print(f"\n{method.upper().replace('_', ' ')}:")
         print("-" * 50)
-        for dataset in embed_types:
+        for dataset in selected_datasets:
+            if dataset not in all_results[method]:
+                continue
             r = all_results[method][dataset]
             params = ", ".join([f"{k}={v}" for k, v in r['best_params'].items()])
-            print(f"  {embed_names[dataset]:<15}: {params}")
+            print(f"  {EMBED_NAMES[dataset]:<15}: {params}")
             print(f"                   Test Acc: {r['test_accuracy']:.4f}, F1: {r['test_f1_macro']:.4f}")
 
 

@@ -66,7 +66,9 @@ python run_random_subspace.py
 - `title_confusion_matrix.png`, `abstract_confusion_matrix.png`, `concat_confusion_matrix.png`
 - `title_year_accuracy.png`, `abstract_year_accuracy.png`, `concat_year_accuracy.png`
 - `title_prediction_dist.png`, `abstract_prediction_dist.png`, `concat_prediction_dist.png`
-- `metrics_summary.json` - Performans metrikleri
+- `title_error_summary.png`, `abstract_error_summary.png`, `concat_error_summary.png` - Yıl bazlı MAE, hata histogramı ve en çok karıştırılan yılların yer aldığı detaylı dashboard
+- `dataset_error_overview.png` - Tüm verisetleri için MAE bar grafiği ve mutlak hata violin grafiği
+- `metrics_summary.json` - Accuracy/F1/Precision/Recall ile birlikte MAE ve RMSE değerleri
 - `results_report.md` - Detaylı sonuç raporu
 - Model dosyaları (`.joblib`)
 
@@ -76,7 +78,16 @@ Her algoritma için en iyi hiperparametreleri bulmak için:
 
 ```bash
 python optimize_hyperparameters.py
+
+# Daha hızlı denemeler için:
+python optimize_hyperparameters.py --mode quick --datasets title abstract --methods random_forest
 ```
+
+**Parametreler:**
+- `--mode {full,quick}`: `quick` seçilirse daha dar bir grid ve (varsayılan olarak) 2-fold CV kullanılır.
+- `--datasets title abstract concat`: Üzerinde arama yapılacak embedding setlerini seçer.
+- `--methods random_forest bagging random_subspace`: Çalıştırılacak algoritmaları belirler.
+- `--cv-folds N`: Fold sayısını manuel olarak değiştirir (quick modda varsayılan 2'dir).
 
 **Çıktılar:** `artifacts/TIMESTAMP_optimization/` klasörü altında:
 - `optimization_results.json` - Optimizasyon sonuçları

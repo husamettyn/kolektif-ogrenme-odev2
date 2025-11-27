@@ -10,8 +10,6 @@ Bu script:
 
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.ensemble import BaggingClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import (
@@ -26,12 +24,20 @@ from datetime import datetime
 import json
 import joblib
 
-# Türkçe karakter desteği için
-plt.rcParams['font.family'] = 'DejaVu Sans'
+from plot_utils import (
+    plot_confusion_matrix,
+    plot_year_accuracy,
+    plot_prediction_distribution,
+    plot_error_summary,
+    plot_dataset_error_overview,
+    plot_comparison,
+)
 
 # Sabit parametreler
 RANDOM_SEED = 42
-N_ESTIMATORS = 100      # Temel öğrenici sayısı
+# Optimizasyon sonuçlarına göre veri setine özel parametreler
+# Tüm veri setleri için: max_samples=1.0, n_estimators=200
+N_ESTIMATORS = 200      # Temel öğrenici sayısı (optimizasyon sonucu)
 MAX_SAMPLES = 1.0       # Her öğrenici için kullanılacak örnek oranı
 MAX_FEATURES = 1.0      # Her öğrenici için kullanılacak özellik oranı
 BOOTSTRAP = True        # Bootstrap örnekleme
@@ -40,6 +46,12 @@ N_JOBS = -1             # Tüm CPU çekirdeklerini kullan
 # Dizinler
 DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
+
+DATASET_PALETTE = {
+    'title': '#2e8b57',
+    'abstract': '#1f77b4',
+    'concat': '#8e44ad'
+}
 
 
 def load_embedding_data(embed_type):
@@ -108,6 +120,8 @@ def evaluate_model(model, X_test, y_test):
         dict: Performans metrikleri
     """
     y_pred = model.predict(X_test)
+    errors = y_pred - y_test
+    abs_errors = np.abs(errors)
     
     metrics = {
         'accuracy': accuracy_score(y_test, y_pred),
@@ -115,144 +129,112 @@ def evaluate_model(model, X_test, y_test):
         'f1_weighted': f1_score(y_test, y_pred, average='weighted'),
         'precision_macro': precision_score(y_test, y_pred, average='macro'),
         'recall_macro': recall_score(y_test, y_pred, average='macro'),
+        'mae': float(np.mean(abs_errors)),
+        'rmse': float(np.sqrt(np.mean(errors**2))),
         'classification_report': classification_report(y_test, y_pred),
         'confusion_matrix': confusion_matrix(y_test, y_pred),
         'y_true': y_test,
-        'y_pred': y_pred
+        'y_pred': y_pred,
+        'errors': errors,
+        'abs_errors': abs_errors
     }
     
     return metrics
 
 
-def plot_confusion_matrix(metrics, title, output_path):
-    """
-    Confusion matrix grafiği oluşturur.
-    
-    Args:
-        metrics: Performans metrikleri
-        title: Grafik başlığı
-        output_path: Kayıt yolu
-    """
-    cm = metrics['confusion_matrix']
-    labels = sorted(list(set(metrics['y_true'])))
-    
-    plt.figure(figsize=(16, 14))
-    
-    # Normalize edilmiş confusion matrix
-    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-    
-    sns.heatmap(
-        cm_normalized, 
-        annot=False,
-        fmt='.2f',
-        cmap='Blues',
-        xticklabels=labels,
-        yticklabels=labels
-    )
-    
-    plt.title(f'{title}\nNormalize Edilmiş Confusion Matrix', fontsize=14)
-    plt.xlabel('Tahmin Edilen Yıl', fontsize=12)
-    plt.ylabel('Gerçek Yıl', fontsize=12)
-    plt.xticks(rotation=45, ha='right')
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
 
 
-def plot_year_accuracy(metrics, title, output_path):
-    """
-    Yıllara göre doğruluk grafiği oluşturur.
-    
-    Args:
-        metrics: Performans metrikleri
-        title: Grafik başlığı
-        output_path: Kayıt yolu
-    """
+def plot_error_summary(metrics, title, output_path, color):
+    """Her veri seti için hata dağılımı ve karışıklıkları gösterir."""
     y_true = metrics['y_true']
-    y_pred = metrics['y_pred']
-    
+    errors = metrics['errors']
+    abs_errors = metrics['abs_errors']
     years = sorted(list(set(y_true)))
-    accuracies = []
     
+    year_mae = []
     for year in years:
         mask = y_true == year
-        if mask.sum() > 0:
-            acc = accuracy_score(y_true[mask], y_pred[mask])
-            accuracies.append(acc)
-        else:
-            accuracies.append(0)
+        year_mae.append(np.mean(np.abs(errors[mask])) if mask.sum() > 0 else 0)
     
-    plt.figure(figsize=(14, 6))
-    bars = plt.bar(years, accuracies, color='forestgreen', edgecolor='darkgreen')
+    sorted_abs = np.sort(abs_errors)
+    cum_ratio = np.linspace(0, 1, len(sorted_abs))
+    top_confusions = get_top_confusions(metrics, top_n=6)
     
-    # Ortalama çizgisi
-    avg_acc = np.mean(accuracies)
-    plt.axhline(y=avg_acc, color='red', linestyle='--', label=f'Ortalama: {avg_acc:.3f}')
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     
-    plt.title(f'{title}\nYıllara Göre Doğruluk', fontsize=14)
-    plt.xlabel('Yıl', fontsize=12)
-    plt.ylabel('Doğruluk', fontsize=12)
-    plt.xticks(years, rotation=45, ha='right')
-    plt.ylim(0, 1)
-    plt.legend()
-    plt.grid(axis='y', alpha=0.3)
+    axes[0, 0].plot(years, year_mae, color=color, marker='o')
+    axes[0, 0].fill_between(years, year_mae, color=color, alpha=0.15)
+    axes[0, 0].set_title('Yıllara Göre Ortalama Mutlak Hata (MAE)')
+    axes[0, 0].set_xlabel('Yıl')
+    axes[0, 0].set_ylabel('MAE')
+    axes[0, 0].set_xticks(years[::2])
+    axes[0, 0].grid(alpha=0.3)
+    
+    bins = np.arange(0, max(10, int(abs_errors.max()) + 2))
+    axes[0, 1].hist(abs_errors, bins=bins, color=color, edgecolor='black', alpha=0.75)
+    axes[0, 1].set_title('Mutlak Hata Dağılımı')
+    axes[0, 1].set_xlabel('|Tahmin - Gerçek|')
+    axes[0, 1].set_ylabel('Frekans')
+    axes[0, 1].grid(axis='y', alpha=0.3)
+    
+    axes[1, 0].plot(sorted_abs, cum_ratio, color=color, linewidth=2)
+    axes[1, 0].set_title('Kümülatif Mutlak Hata Eğrisi')
+    axes[1, 0].set_xlabel('|Hata|')
+    axes[1, 0].set_ylabel('Kümülatif Oran')
+    axes[1, 0].grid(alpha=0.3)
+    
+    if top_confusions:
+        pairs = [f"{item['actual']} → {item['predicted']}" for item in top_confusions]
+        counts = [item['count'] for item in top_confusions]
+        axes[1, 1].barh(pairs[::-1], counts[::-1], color=color, alpha=0.85)
+        axes[1, 1].set_title('En Çok Karıştırılan Yıl Çiftleri')
+        axes[1, 1].set_xlabel('Adet')
+        axes[1, 1].grid(axis='x', alpha=0.2)
+    else:
+        axes[1, 1].text(0.5, 0.5, "Önemli karışıklık yok", ha='center', va='center')
+        axes[1, 1].set_axis_off()
+    
+    plt.suptitle(title, fontsize=14, y=0.98)
     plt.tight_layout()
-    
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
 
-def plot_prediction_distribution(metrics, title, output_path):
-    """
-    Tahmin dağılımı grafiği oluşturur.
+def plot_dataset_error_overview(all_results, output_dir, embed_names):
+    """Veri setleri arasında hata dağılımını karşılaştırır."""
+    datasets = list(all_results.keys())
+    mae_values = [all_results[ds]['metrics']['mae'] for ds in datasets]
+    abs_error_lists = [all_results[ds]['metrics']['abs_errors'] for ds in datasets]
     
-    Args:
-        metrics: Performans metrikleri
-        title: Grafik başlığı
-        output_path: Kayıt yolu
-    """
-    y_true = metrics['y_true']
-    y_pred = metrics['y_pred']
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    colors = [DATASET_PALETTE[ds] for ds in datasets]
     
-    # Hata analizi
-    errors = y_pred - y_true
-    
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Hata dağılımı
-    axes[0].hist(errors, bins=50, color='forestgreen', edgecolor='darkgreen', alpha=0.7)
-    axes[0].axvline(x=0, color='red', linestyle='--', linewidth=2)
-    axes[0].set_title('Tahmin Hatası Dağılımı', fontsize=12)
-    axes[0].set_xlabel('Hata (Tahmin - Gerçek)', fontsize=10)
-    axes[0].set_ylabel('Frekans', fontsize=10)
+    axes[0].bar(
+        [embed_names[ds] for ds in datasets],
+        mae_values,
+        color=colors,
+        edgecolor='black',
+        alpha=0.85
+    )
+    axes[0].set_title('Verisetlerine Göre MAE')
+    axes[0].set_ylabel('MAE')
     axes[0].grid(axis='y', alpha=0.3)
     
-    # MAE ve RMSE
-    mae = np.mean(np.abs(errors))
-    rmse = np.sqrt(np.mean(errors**2))
-    axes[0].text(0.95, 0.95, f'MAE: {mae:.2f}\nRMSE: {rmse:.2f}', 
-                 transform=axes[0].transAxes, fontsize=10,
-                 verticalalignment='top', horizontalalignment='right',
-                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    parts = axes[1].violinplot(abs_error_lists, showmeans=True, showmedians=True)
+    for idx, body in enumerate(parts['bodies']):
+        body.set_facecolor(colors[idx])
+        body.set_edgecolor('black')
+        body.set_alpha(0.6)
+    axes[1].set_xticks(np.arange(1, len(datasets)+1))
+    axes[1].set_xticklabels([embed_names[ds] for ds in datasets])
+    axes[1].set_title('Mutlak Hata Dağılımı (Violin)')
+    axes[1].set_ylabel('|Tahmin - Gerçek|')
+    axes[1].grid(axis='y', alpha=0.3)
     
-    # Scatter plot: Gerçek vs Tahmin
-    axes[1].scatter(y_true, y_pred, alpha=0.3, s=10, c='forestgreen')
-    axes[1].plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 
-                 'r--', linewidth=2, label='İdeal')
-    axes[1].set_title('Gerçek vs Tahmin', fontsize=12)
-    axes[1].set_xlabel('Gerçek Yıl', fontsize=10)
-    axes[1].set_ylabel('Tahmin Edilen Yıl', fontsize=10)
-    axes[1].legend()
-    axes[1].grid(alpha=0.3)
-    
-    plt.suptitle(title, fontsize=14, y=1.02)
+    plt.suptitle('Verisetleri Hata Özeti', fontsize=14, y=0.98)
     plt.tight_layout()
-    
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, "dataset_error_overview.png"), dpi=150, bbox_inches='tight')
     plt.close()
-
 
 def save_results(all_results, output_dir):
     """
@@ -270,7 +252,9 @@ def save_results(all_results, output_dir):
             'f1_macro': results['metrics']['f1_macro'],
             'f1_weighted': results['metrics']['f1_weighted'],
             'precision_macro': results['metrics']['precision_macro'],
-            'recall_macro': results['metrics']['recall_macro']
+            'recall_macro': results['metrics']['recall_macro'],
+            'mae': results['metrics']['mae'],
+            'rmse': results['metrics']['rmse']
         }
     
     with open(os.path.join(output_dir, "metrics_summary.json"), "w") as f:
@@ -292,18 +276,20 @@ def save_results(all_results, output_dir):
 
 ## Performans Karşılaştırması
 
-| Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall |
-|----------|----------|------------|---------------|-----------|--------|
+| Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
+|----------|----------|------------|---------------|-----------|--------|-----|------|
 """.format(N_ESTIMATORS, MAX_SAMPLES, MAX_FEATURES, BOOTSTRAP, RANDOM_SEED)
     
     for embed_type, metrics in summary.items():
-        comparison_text += "| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} |\n".format(
+        comparison_text += "| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} | {:.2f} |\n".format(
             embed_type,
             metrics['accuracy'],
             metrics['f1_macro'],
             metrics['f1_weighted'],
             metrics['precision_macro'],
-            metrics['recall_macro']
+            metrics['recall_macro'],
+            metrics['mae'],
+            metrics['rmse']
         )
     
     # Her veriseti için detaylı rapor
@@ -423,6 +409,13 @@ def main():
             os.path.join(output_dir, f"{embed_type}_prediction_dist.png")
         )
         
+        plot_error_summary(
+            metrics,
+            f"Bagging - {embed_names[embed_type]} Detaylı Hata Profili",
+            os.path.join(output_dir, f"{embed_type}_error_summary.png"),
+            DATASET_PALETTE[embed_type]
+        )
+        
         # Modeli kaydet
         model_path = os.path.join(output_dir, f"{embed_type}_model.joblib")
         joblib.dump(model, model_path)
@@ -440,6 +433,7 @@ def main():
     
     save_results(all_results, output_dir)
     plot_comparison(all_results, output_dir)
+    plot_dataset_error_overview(all_results, output_dir, embed_names)
     
     print(f"\n✓ Tüm sonuçlar kaydedildi: {output_dir}/")
     
@@ -447,15 +441,18 @@ def main():
     print("\n" + "=" * 60)
     print("ÖZET")
     print("=" * 60)
-    print("\n{:<15} {:>10} {:>10} {:>10}".format("Veriseti", "Accuracy", "F1-Macro", "F1-Weight"))
-    print("-" * 50)
+    print("\n{:<15} {:>10} {:>10} {:>10} {:>8}".format(
+        "Veriseti", "Accuracy", "F1-Macro", "F1-Weight", "MAE"
+    ))
+    print("-" * 60)
     for embed_type in embed_types:
         m = all_results[embed_type]['metrics']
-        print("{:<15} {:>10.4f} {:>10.4f} {:>10.4f}".format(
+        print("{:<15} {:>10.4f} {:>10.4f} {:>10.4f} {:>8.2f}".format(
             embed_names[embed_type],
             m['accuracy'],
             m['f1_macro'],
-            m['f1_weighted']
+            m['f1_weighted'],
+            m['mae']
         ))
 
 

@@ -28,15 +28,28 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 
 # Sabit parametreler - Random Subspace için özellik alt kümesi seçimi
 RANDOM_SEED = 42
-N_ESTIMATORS = 100
+# Optimizasyon sonuçlarına göre veri setine özel parametreler
+# Başlık: max_features=0.7, n_estimators=100
+# Özet: max_features=0.3, n_estimators=200
+# Birleştirilmiş: max_features=0.5, n_estimators=200
+PARAMS_BY_DATASET = {
+    'title': {'n_estimators': 100, 'max_features': 0.7},
+    'abstract': {'n_estimators': 200, 'max_features': 0.3},
+    'concat': {'n_estimators': 200, 'max_features': 0.5}
+}
 MAX_SAMPLES = 1.0       # Tüm örnekleri kullan
-MAX_FEATURES = 0.5      # Özelliklerin %50'sini rastgele seç
 BOOTSTRAP = False       # Örnekleme yapma (sadece özellik seçimi)
 BOOTSTRAP_FEATURES = True  # Özellik alt kümesi seçimi
 N_JOBS = -1
 
 DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
+
+DATASET_PALETTE = {
+    'title': '#7b1fa2',
+    'abstract': '#1f3b73',
+    'concat': '#ff7043'
+}
 
 
 def load_embedding_data(embed_type):
@@ -48,15 +61,18 @@ def load_embedding_data(embed_type):
             test_data['embeddings'], test_data['years'])
 
 
-def train_model(X_train, y_train):
+def train_model(X_train, y_train, embed_type):
     """Random Subspace modeli eğitir (özellik alt kümesi yöntemi)."""
+    # Veri setine özel parametreleri al
+    params = PARAMS_BY_DATASET.get(embed_type, {'n_estimators': 100, 'max_features': 0.5})
+    
     base_estimator = DecisionTreeClassifier(random_state=RANDOM_SEED)
     
     model = BaggingClassifier(
         estimator=base_estimator,
-        n_estimators=N_ESTIMATORS,
+        n_estimators=params['n_estimators'],
         max_samples=MAX_SAMPLES,
-        max_features=MAX_FEATURES,
+        max_features=params['max_features'],
         bootstrap=BOOTSTRAP,
         bootstrap_features=BOOTSTRAP_FEATURES,
         random_state=RANDOM_SEED,
@@ -69,15 +85,22 @@ def train_model(X_train, y_train):
 
 def evaluate_model(model, X_test, y_test):
     y_pred = model.predict(X_test)
+    errors = y_pred - y_test
+    abs_errors = np.abs(errors)
     return {
         'accuracy': accuracy_score(y_test, y_pred),
         'f1_macro': f1_score(y_test, y_pred, average='macro'),
         'f1_weighted': f1_score(y_test, y_pred, average='weighted'),
         'precision_macro': precision_score(y_test, y_pred, average='macro'),
         'recall_macro': recall_score(y_test, y_pred, average='macro'),
+        'mae': float(np.mean(abs_errors)),
+        'rmse': float(np.sqrt(np.mean(errors**2))),
         'classification_report': classification_report(y_test, y_pred),
         'confusion_matrix': confusion_matrix(y_test, y_pred),
-        'y_true': y_test, 'y_pred': y_pred
+        'y_true': y_test,
+        'y_pred': y_pred,
+        'errors': errors,
+        'abs_errors': abs_errors
     }
 
 
@@ -147,12 +170,135 @@ def plot_prediction_distribution(metrics, title, output_path):
     plt.close()
 
 
+def get_top_confusions(metrics, top_n=8):
+    """En sık karıştırılan yıl çiftlerini döndürür."""
+    cm = metrics['confusion_matrix'].astype(float)
+    labels = sorted(list(set(metrics['y_true'])))
+    mis_cm = cm.copy()
+    np.fill_diagonal(mis_cm, 0)
+    
+    flat_indices = np.argsort(mis_cm, axis=None)[::-1]
+    top_pairs = []
+    for idx in flat_indices:
+        if len(top_pairs) >= top_n:
+            break
+        i, j = divmod(idx, mis_cm.shape[1])
+        count = mis_cm[i, j]
+        if count <= 0:
+            break
+        top_pairs.append({
+            'actual': labels[i],
+            'predicted': labels[j],
+            'count': int(cm[i, j])
+        })
+    return top_pairs
+
+
+def plot_error_summary(metrics, title, output_path, color):
+    """Hata dağılımına dair daha detaylı görselleştirme üretir."""
+    y_true = metrics['y_true']
+    errors = metrics['errors']
+    abs_errors = metrics['abs_errors']
+    years = sorted(list(set(y_true)))
+    
+    year_mae = []
+    for year in years:
+        mask = y_true == year
+        year_mae.append(np.mean(np.abs(errors[mask])) if mask.sum() > 0 else 0)
+    
+    sorted_abs = np.sort(abs_errors)
+    cum_ratio = np.linspace(0, 1, len(sorted_abs))
+    top_confusions = get_top_confusions(metrics, top_n=6)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    axes[0, 0].plot(years, year_mae, color=color, marker='o')
+    axes[0, 0].fill_between(years, year_mae, color=color, alpha=0.15)
+    axes[0, 0].set_title('Yıllara Göre Ortalama Mutlak Hata (MAE)')
+    axes[0, 0].set_xlabel('Yıl')
+    axes[0, 0].set_ylabel('MAE')
+    axes[0, 0].set_xticks(years[::2])
+    axes[0, 0].grid(alpha=0.3)
+    
+    bins = np.arange(0, max(10, int(abs_errors.max()) + 2))
+    axes[0, 1].hist(abs_errors, bins=bins, color=color, edgecolor='black', alpha=0.75)
+    axes[0, 1].set_title('Mutlak Hata Dağılımı')
+    axes[0, 1].set_xlabel('|Tahmin - Gerçek|')
+    axes[0, 1].set_ylabel('Frekans')
+    axes[0, 1].grid(axis='y', alpha=0.3)
+    
+    axes[1, 0].plot(sorted_abs, cum_ratio, color=color, linewidth=2)
+    axes[1, 0].set_title('Kümülatif Mutlak Hata Eğrisi')
+    axes[1, 0].set_xlabel('|Hata|')
+    axes[1, 0].set_ylabel('Kümülatif Oran')
+    axes[1, 0].grid(alpha=0.3)
+    
+    if top_confusions:
+        pairs = [f"{item['actual']} → {item['predicted']}" for item in top_confusions]
+        counts = [item['count'] for item in top_confusions]
+        axes[1, 1].barh(pairs[::-1], counts[::-1], color=color, alpha=0.85)
+        axes[1, 1].set_title('En Çok Karıştırılan Yıl Çiftleri')
+        axes[1, 1].set_xlabel('Adet')
+        axes[1, 1].grid(axis='x', alpha=0.2)
+    else:
+        axes[1, 1].text(0.5, 0.5, "Önemli karışıklık yok", ha='center', va='center')
+        axes[1, 1].set_axis_off()
+    
+    plt.suptitle(title, fontsize=14, y=0.98)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_dataset_error_overview(all_results, output_dir, embed_names):
+    """Veri setleri arasında hata profili karşılaştırması yapar."""
+    datasets = list(all_results.keys())
+    mae_values = [all_results[ds]['metrics']['mae'] for ds in datasets]
+    abs_error_lists = [all_results[ds]['metrics']['abs_errors'] for ds in datasets]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    colors = [DATASET_PALETTE[ds] for ds in datasets]
+    
+    axes[0].bar(
+        [embed_names[ds] for ds in datasets],
+        mae_values,
+        color=colors,
+        edgecolor='black',
+        alpha=0.85
+    )
+    axes[0].set_title('Verisetlerine Göre MAE')
+    axes[0].set_ylabel('MAE')
+    axes[0].grid(axis='y', alpha=0.3)
+    
+    parts = axes[1].violinplot(abs_error_lists, showmeans=True, showmedians=True)
+    for idx, body in enumerate(parts['bodies']):
+        body.set_facecolor(colors[idx])
+        body.set_edgecolor('black')
+        body.set_alpha(0.6)
+    axes[1].set_xticks(np.arange(1, len(datasets)+1))
+    axes[1].set_xticklabels([embed_names[ds] for ds in datasets])
+    axes[1].set_title('Mutlak Hata Dağılımı (Violin)')
+    axes[1].set_ylabel('|Tahmin - Gerçek|')
+    axes[1].grid(axis='y', alpha=0.3)
+    
+    plt.suptitle('Verisetleri Hata Özeti', fontsize=14, y=0.98)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "dataset_error_overview.png"), dpi=150, bbox_inches='tight')
+    plt.close()
+
 def save_results(all_results, output_dir):
-    summary = {et: {'accuracy': r['metrics']['accuracy'], 'f1_macro': r['metrics']['f1_macro'],
-                    'f1_weighted': r['metrics']['f1_weighted'], 
-                    'precision_macro': r['metrics']['precision_macro'],
-                    'recall_macro': r['metrics']['recall_macro']} 
-               for et, r in all_results.items()}
+    summary = {
+        et: {
+            'accuracy': r['metrics']['accuracy'],
+            'f1_macro': r['metrics']['f1_macro'],
+            'f1_weighted': r['metrics']['f1_weighted'],
+            'precision_macro': r['metrics']['precision_macro'],
+            'recall_macro': r['metrics']['recall_macro'],
+            'mae': r['metrics']['mae'],
+            'rmse': r['metrics']['rmse']
+        }
+        for et, r in all_results.items()
+    }
     
     with open(os.path.join(output_dir, "metrics_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -162,19 +308,22 @@ def save_results(all_results, output_dir):
 ## Model Parametreleri
 | Parametre | Değer |
 |-----------|-------|
-| n_estimators | {N_ESTIMATORS} |
+| n_estimators | Veri setine göre değişir (title: 100, abstract: 200, concat: 200) |
 | max_samples | {MAX_SAMPLES} |
-| max_features | {MAX_FEATURES} |
+| max_features | Veri setine göre değişir (title: 0.7, abstract: 0.3, concat: 0.5) |
 | bootstrap | {BOOTSTRAP} |
 | bootstrap_features | {BOOTSTRAP_FEATURES} |
 | random_state | {RANDOM_SEED} |
 
 ## Performans Karşılaştırması
-| Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall |
-|----------|----------|------------|---------------|-----------|--------|
+| Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
+|----------|----------|------------|---------------|-----------|--------|-----|------|
 """
     for et, m in summary.items():
-        report += f"| {et} | {m['accuracy']:.4f} | {m['f1_macro']:.4f} | {m['f1_weighted']:.4f} | {m['precision_macro']:.4f} | {m['recall_macro']:.4f} |\n"
+        report += (
+            f"| {et} | {m['accuracy']:.4f} | {m['f1_macro']:.4f} | {m['f1_weighted']:.4f} | "
+            f"{m['precision_macro']:.4f} | {m['recall_macro']:.4f} | {m['mae']:.2f} | {m['rmse']:.2f} |\n"
+        )
     
     for et, r in all_results.items():
         report += f"\n## {et.capitalize()} Detaylı Rapor\n```\n{r['metrics']['classification_report']}\n```\n"
@@ -235,7 +384,7 @@ def main():
         print(f"   Train: {X_train.shape}, Test: {X_test.shape}")
         
         print("\n2. Model eğitiliyor...")
-        model = train_model(X_train, y_train)
+        model = train_model(X_train, y_train, embed_type)
         
         print("\n3. Model değerlendiriliyor...")
         metrics = evaluate_model(model, X_test, y_test)
@@ -248,6 +397,12 @@ def main():
                            os.path.join(output_dir, f"{embed_type}_year_accuracy.png"))
         plot_prediction_distribution(metrics, f"Random Subspace - {embed_names[embed_type]}",
                                      os.path.join(output_dir, f"{embed_type}_prediction_dist.png"))
+        plot_error_summary(
+            metrics,
+            f"Random Subspace - {embed_names[embed_type]} Detaylı Hata Profili",
+            os.path.join(output_dir, f"{embed_type}_error_summary.png"),
+            DATASET_PALETTE[embed_type]
+        )
         
         model_path = os.path.join(output_dir, f"{embed_type}_model.joblib")
         joblib.dump(model, model_path)
@@ -258,14 +413,18 @@ def main():
     print(f"\n{'='*60}\nSONUÇLAR KAYDEDİLİYOR\n{'='*60}")
     save_results(all_results, output_dir)
     plot_comparison(all_results, output_dir)
+    plot_dataset_error_overview(all_results, output_dir, embed_names)
     print(f"\n✓ Tüm sonuçlar kaydedildi: {output_dir}/")
     
     print("\n" + "=" * 60 + "\nÖZET\n" + "=" * 60)
-    print("\n{:<15} {:>10} {:>10} {:>10}".format("Veriseti", "Accuracy", "F1-Macro", "F1-Weight"))
-    print("-" * 50)
+    print("\n{:<15} {:>10} {:>10} {:>10} {:>8}".format(
+        "Veriseti", "Accuracy", "F1-Macro", "F1-Weight", "MAE"
+    ))
+    print("-" * 60)
     for et in embed_types:
         m = all_results[et]['metrics']
-        print(f"{embed_names[et]:<15} {m['accuracy']:>10.4f} {m['f1_macro']:>10.4f} {m['f1_weighted']:>10.4f}")
+        print(f"{embed_names[et]:<15} {m['accuracy']:>10.4f} {m['f1_macro']:>10.4f} "
+              f"{m['f1_weighted']:>10.4f} {m['mae']:>8.2f}")
 
 
 if __name__ == "__main__":

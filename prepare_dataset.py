@@ -2,15 +2,15 @@
 Veriseti Hazırlama Scripti
 
 Bu script:
-1. Huggingface'den turkish-academic-theses-dataset verisetini indirir
-2. 2001-2025 yılları arasındaki tezlerden her yıl için 500 tez seçer (rastgele)
+1. Yerel turkish-academic-theses-dataset verisetini kullanır
+2. 2000-2024 yılları arasındaki tezlerden her yıl için 500 tez seçer (rastgele)
 3. Her yıldan 250 tez eğitim, 250 tez test için ayrılır
 4. Sonuç verisetleri dataset/ klasörüne kaydedilir
 """
 
 import os
 import random
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import Dataset, DatasetDict
 import pandas as pd
 from collections import Counter
 
@@ -19,29 +19,39 @@ RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
 
 # Yıl aralığı
-START_YEAR = 2001
-END_YEAR = 2025
+START_YEAR = 2000
+END_YEAR = 2024
 
 # Her yıl için seçilecek tez sayısı
 THESES_PER_YEAR = 500
 TRAIN_PER_YEAR = 250
 TEST_PER_YEAR = 250
 
-# Çıktı dizini
+# Girdi/çıktı dizinleri
+RAW_DATASET_PATH = os.path.join("datasets", "tezler.parquet")
 OUTPUT_DIR = "dataset"
 
 
 def load_thesis_dataset():
     """
-    Huggingface'den tez verisetini yükler.
+    Yerel parquet dosyasından tez verisetini yükler.
     
     Returns:
-        Dataset: Yüklenen veriseti
+        list[dict]: Yüklenen verisetinin kayıt listesi
     """
-    print("Veriseti Huggingface'den indiriliyor...")
-    ds = load_dataset("umutertugrul/turkish-academic-theses-dataset")
-    print(f"Veriseti yüklendi. Toplam kayıt sayısı: {len(ds['train'])}")
-    return ds['train']
+    print("Yerel tez veriseti yükleniyor...")
+    
+    if not os.path.exists(RAW_DATASET_PATH):
+        raise FileNotFoundError(
+            f"Beklenen veriseti bulunamadı: {RAW_DATASET_PATH}. "
+            "Lütfen dosyayı datasets/ klasörüne yerleştirin."
+        )
+    
+    df = pd.read_parquet(RAW_DATASET_PATH)
+    print(f"Veriseti yüklendi. Toplam kayıt sayısı: {len(df)}")
+    
+    # Huggingface Dataset yapısına benzer kullanım için kayıt listesini döndür
+    return df.to_dict(orient="records")
 
 
 def filter_by_years(dataset, start_year, end_year):
