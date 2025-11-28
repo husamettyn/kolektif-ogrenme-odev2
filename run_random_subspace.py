@@ -28,19 +28,25 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 
 # Sabit parametreler - Random Subspace için özellik alt kümesi seçimi
 RANDOM_SEED = 42
-# Optimizasyon sonuçlarına göre veri setine özel parametreler
-# Başlık: max_features=0.7, n_estimators=100
-# Özet: max_features=0.3, n_estimators=200
-# Birleştirilmiş: max_features=0.5, n_estimators=200
+# Optimizasyon sonuçlarına göre veri setine özel parametreler (optimizing.txt'den)
+# Başlık: max_features=0.7, n_estimators=50
+# Özet: max_features=0.7, n_estimators=200
+# Birleştirilmiş: max_features=0.5, n_estimators=100
 PARAMS_BY_DATASET = {
-    'title': {'n_estimators': 100, 'max_features': 0.7},
-    'abstract': {'n_estimators': 200, 'max_features': 0.3},
-    'concat': {'n_estimators': 200, 'max_features': 0.5}
+    'title': {'n_estimators': 50, 'max_features': 0.7},
+    'abstract': {'n_estimators': 200, 'max_features': 0.7},
+    'concat': {'n_estimators': 100, 'max_features': 0.5}
 }
 MAX_SAMPLES = 1.0       # Tüm örnekleri kullan
 BOOTSTRAP = False       # Örnekleme yapma (sadece özellik seçimi)
 BOOTSTRAP_FEATURES = True  # Özellik alt kümesi seçimi
 N_JOBS = -1
+
+# Decision Tree parametreleri (ağaç derinliğini sınırlamak için - performans için kritik!)
+# Optimizasyon sırasında max_depth=20 kullanıldı
+MAX_DEPTH = 20          # Maksimum ağaç derinliği
+MIN_SAMPLES_SPLIT = 2   # Bir node'u split etmek için minimum örnek sayısı
+MIN_SAMPLES_LEAF = 1    # Bir leaf node'da minimum örnek sayısı
 
 DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
@@ -66,7 +72,13 @@ def train_model(X_train, y_train, embed_type):
     # Veri setine özel parametreleri al
     params = PARAMS_BY_DATASET.get(embed_type, {'n_estimators': 100, 'max_features': 0.5})
     
-    base_estimator = DecisionTreeClassifier(random_state=RANDOM_SEED)
+    # ÖNEMLİ: max_depth parametresi olmadan ağaçlar çok derin olur ve eğitim çok uzun sürer!
+    base_estimator = DecisionTreeClassifier(
+        max_depth=MAX_DEPTH,
+        min_samples_split=MIN_SAMPLES_SPLIT,
+        min_samples_leaf=MIN_SAMPLES_LEAF,
+        random_state=RANDOM_SEED
+    )
     
     model = BaggingClassifier(
         estimator=base_estimator,
@@ -308,11 +320,15 @@ def save_results(all_results, output_dir):
 ## Model Parametreleri
 | Parametre | Değer |
 |-----------|-------|
-| n_estimators | Veri setine göre değişir (title: 100, abstract: 200, concat: 200) |
+| n_estimators | Veri setine göre değişir (title: 50, abstract: 200, concat: 100) |
 | max_samples | {MAX_SAMPLES} |
-| max_features | Veri setine göre değişir (title: 0.7, abstract: 0.3, concat: 0.5) |
+| max_features | Veri setine göre değişir (title: 0.7, abstract: 0.7, concat: 0.5) |
 | bootstrap | {BOOTSTRAP} |
 | bootstrap_features | {BOOTSTRAP_FEATURES} |
+| base_estimator | DecisionTreeClassifier |
+| max_depth | {MAX_DEPTH} |
+| min_samples_split | {MIN_SAMPLES_SPLIT} |
+| min_samples_leaf | {MIN_SAMPLES_LEAF} |
 | random_state | {RANDOM_SEED} |
 
 ## Performans Karşılaştırması

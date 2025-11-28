@@ -30,14 +30,14 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 
 # Sabit parametreler
 RANDOM_SEED = 42
-# Optimizasyon sonuçlarına göre veri setine özel parametreler
-# Başlık: max_depth=20, n_estimators=100
-# Özet: max_depth=30, n_estimators=200
-# Birleştirilmiş: max_depth=20, n_estimators=200
+# Optimizasyon sonuçlarına göre veri setine özel parametreler (optimizing.txt'den)
+# Başlık: max_depth=30, n_estimators=200
+# Özet: max_depth=20, n_estimators=200
+# Birleştirilmiş: max_depth=10, n_estimators=200
 PARAMS_BY_DATASET = {
-    'title': {'n_estimators': 100, 'max_depth': 20},
-    'abstract': {'n_estimators': 200, 'max_depth': 30},
-    'concat': {'n_estimators': 200, 'max_depth': 20}
+    'title': {'n_estimators': 200, 'max_depth': 30},
+    'abstract': {'n_estimators': 200, 'max_depth': 20},
+    'concat': {'n_estimators': 200, 'max_depth': 10}
 }
 MIN_SAMPLES_SPLIT = 2
 MIN_SAMPLES_LEAF = 1

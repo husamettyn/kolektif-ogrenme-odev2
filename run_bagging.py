@@ -36,13 +36,24 @@ from plot_utils import (
 
 # Sabit parametreler
 RANDOM_SEED = 42
-# Optimizasyon sonuçlarına göre veri setine özel parametreler
-# Tüm veri setleri için: max_samples=1.0, n_estimators=200
-N_ESTIMATORS = 200      # Temel öğrenici sayısı (optimizasyon sonucu)
-MAX_SAMPLES = 1.0       # Her öğrenici için kullanılacak örnek oranı
+# Optimizasyon sonuçlarına göre veri setine özel parametreler (optimizing.txt'den)
+# Başlık: max_samples=0.7, n_estimators=200
+# Özet: max_samples=1.0, n_estimators=200
+# Birleştirilmiş: max_samples=0.5, n_estimators=200
+PARAMS_BY_DATASET = {
+    'title': {'n_estimators': 200, 'max_samples': 0.7},
+    'abstract': {'n_estimators': 200, 'max_samples': 1.0},
+    'concat': {'n_estimators': 200, 'max_samples': 0.5}
+}
 MAX_FEATURES = 1.0      # Her öğrenici için kullanılacak özellik oranı
 BOOTSTRAP = True        # Bootstrap örnekleme
 N_JOBS = -1             # Tüm CPU çekirdeklerini kullan
+
+# Decision Tree parametreleri (ağaç derinliğini sınırlamak için - performans için kritik!)
+# Optimizasyon sırasında max_depth=20 kullanıldı
+MAX_DEPTH = 20          # Maksimum ağaç derinliği
+MIN_SAMPLES_SPLIT = 2   # Bir node'u split etmek için minimum örnek sayısı
+MIN_SAMPLES_LEAF = 1    # Bir leaf node'da minimum örnek sayısı
 
 # Dizinler
 DATASET_DIR = "dataset"
@@ -79,24 +90,34 @@ def load_embedding_data(embed_type):
     )
 
 
-def train_model(X_train, y_train):
+def train_model(X_train, y_train, embed_type):
     """
     Bagging modeli eğitir.
     
     Args:
         X_train: Eğitim özellikleri
         y_train: Eğitim etiketleri
+        embed_type: Veri seti türü ('title', 'abstract', 'concat')
     
     Returns:
         BaggingClassifier: Eğitilmiş model
     """
+    # Veri setine özel parametreleri al
+    params = PARAMS_BY_DATASET.get(embed_type, {'n_estimators': 200, 'max_samples': 1.0})
+    
     # Temel öğrenici olarak Decision Tree kullan
-    base_estimator = DecisionTreeClassifier(random_state=RANDOM_SEED)
+    # ÖNEMLİ: max_depth parametresi olmadan ağaçlar çok derin olur ve eğitim çok uzun sürer!
+    base_estimator = DecisionTreeClassifier(
+        max_depth=MAX_DEPTH,
+        min_samples_split=MIN_SAMPLES_SPLIT,
+        min_samples_leaf=MIN_SAMPLES_LEAF,
+        random_state=RANDOM_SEED
+    )
     
     model = BaggingClassifier(
         estimator=base_estimator,
-        n_estimators=N_ESTIMATORS,
-        max_samples=MAX_SAMPLES,
+        n_estimators=params['n_estimators'],
+        max_samples=params['max_samples'],
         max_features=MAX_FEATURES,
         bootstrap=BOOTSTRAP,
         random_state=RANDOM_SEED,
@@ -174,18 +195,21 @@ def save_results(all_results, output_dir):
 
 | Parametre | Değer |
 |-----------|-------|
-| n_estimators | {} |
-| max_samples | {} |
+| n_estimators | Veri setine göre değişir (title: 200, abstract: 200, concat: 200) |
+| max_samples | Veri setine göre değişir (title: 0.7, abstract: 1.0, concat: 0.5) |
 | max_features | {} |
 | bootstrap | {} |
 | base_estimator | DecisionTreeClassifier |
+| max_depth | {} |
+| min_samples_split | {} |
+| min_samples_leaf | {} |
 | random_state | {} |
 
 ## Performans Karşılaştırması
 
 | Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
 |----------|----------|------------|---------------|-----------|--------|-----|------|
-""".format(N_ESTIMATORS, MAX_SAMPLES, MAX_FEATURES, BOOTSTRAP, RANDOM_SEED)
+""".format(MAX_FEATURES, BOOTSTRAP, MAX_DEPTH, MIN_SAMPLES_SPLIT, MIN_SAMPLES_LEAF, RANDOM_SEED)
     
     for embed_type, metrics in summary.items():
         comparison_text += "| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} | {:.2f} |\n".format(
@@ -245,7 +269,7 @@ def main():
         
         # Model eğit
         print("\n2. Model eğitiliyor...")
-        model = train_model(X_train, y_train)
+        model = train_model(X_train, y_train, embed_type)
         
         # Değerlendir
         print("\n3. Model değerlendiriliyor...")
