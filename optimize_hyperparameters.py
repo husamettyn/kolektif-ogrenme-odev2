@@ -10,9 +10,21 @@ Bu script:
 import argparse
 import json
 import os
+import sys
+import time
 from datetime import datetime
 
 import numpy as np
+
+# Paralel işlemlerde stdout buffering sorununu önlemek için
+# stdout'u unbuffered yapıyoruz (tee ile kullanım için önemli)
+# Python 3.7+ için reconfigure, eski versiyonlar için flush kullanıyoruz
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+else:
+    # Eski Python versiyonları için: her print'ten sonra flush yapılacak
+    # Bunu print fonksiyonunu override ederek yapabiliriz ama şimdilik bu yeterli
+    pass
 from sklearn.ensemble import BaggingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import GridSearchCV
@@ -23,6 +35,12 @@ DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
 DEFAULT_CV_FOLDS = 3  # Cross-validation varsayılanı
 N_JOBS = 10
+
+# Decision Tree parametreleri (ağaç derinliğini sınırlamak için - performans için kritik!)
+# NOT: max_depth=30 çok yüksek olabilir, optimizasyon için 20'ye düşürüldü
+MAX_DEPTH = 20          # Maksimum ağaç derinliği (optimizasyon için düşürüldü)
+MIN_SAMPLES_SPLIT = 2   # Bir node'u split etmek için minimum örnek sayısı
+MIN_SAMPLES_LEAF = 1    # Bir leaf node'da minimum örnek sayısı
 
 EMBED_TYPES = ['title', 'abstract', 'concat']
 EMBED_NAMES = {'title': 'Başlık', 'abstract': 'Özet', 'concat': 'Birleştirilmiş'}
@@ -126,11 +144,17 @@ def optimize_random_forest(X_train, y_train, X_test, y_test, cv_folds, param_gri
     print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
     
+    # verbose=1: sadece tamamlanan işlemleri gösterir (paralel işlemlerde daha temiz çıktı)
+    # verbose=2: her fit işlemini gösterir ama paralel işlemlerde çıktılar karışabilir
     grid_search = GridSearchCV(
         model, param_grid, cv=cv_folds, scoring='accuracy',
-        verbose=2, n_jobs=1  # Model zaten paralel
+        verbose=1, n_jobs=-1  # GridSearchCV seviyesinde paralelleştirme
     )
+    
+    start_time = time.time()
     grid_search.fit(X_train, y_train)
+    elapsed_time = time.time() - start_time
+    print(f"\n⏱️  Optimizasyon süresi: {elapsed_time:.1f} saniye ({elapsed_time/60:.1f} dakika)")
     
     # En iyi model ile test
     best_model = grid_search.best_estimator_
@@ -175,16 +199,34 @@ def optimize_bagging(X_train, y_train, X_test, y_test, cv_folds, param_grid):
     print("BAGGING OPTİMİZASYONU")
     print("="*50)
     
-    base = DecisionTreeClassifier(random_state=RANDOM_SEED)
-    model = BaggingClassifier(estimator=base, random_state=RANDOM_SEED, n_jobs=N_JOBS)
+    # ÖNEMLİ: max_depth parametresi olmadan ağaçlar çok derin olur ve optimizasyon çok uzun sürer!
+    # Nested parallelism'i önlemek için base estimator'da n_jobs kullanmıyoruz
+    base = DecisionTreeClassifier(
+        max_depth=MAX_DEPTH,
+        min_samples_split=MIN_SAMPLES_SPLIT,
+        min_samples_leaf=MIN_SAMPLES_LEAF,
+        random_state=RANDOM_SEED
+    )
+    # GridSearchCV seviyesinde paralelleştirme yapacağız, bu yüzden BaggingClassifier'da n_jobs=1
+    # Aksi halde nested parallelism sorunu olur ve performans düşer
+    model = BaggingClassifier(estimator=base, random_state=RANDOM_SEED, n_jobs=1)
     
     print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
+    print(f"max_depth={MAX_DEPTH} ile DecisionTree kullanılıyor")
     
+    # GridSearchCV seviyesinde paralelleştirme yapıyoruz
+    # n_jobs=-1 tüm CPU'ları kullanır, ama nested parallelism'i önlemek için dikkatli olmalıyız
+    # verbose=1: paralel işlemlerde daha temiz çıktı (verbose=2 çıktıları karıştırabilir)
     grid_search = GridSearchCV(
-        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=2, n_jobs=1
+        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=1, n_jobs=-1
     )
+    
+    import time
+    start_time = time.time()
     grid_search.fit(X_train, y_train)
+    elapsed_time = time.time() - start_time
+    print(f"\n⏱️  Optimizasyon süresi: {elapsed_time:.1f} saniye ({elapsed_time/60:.1f} dakika)")
     
     best_model = grid_search.best_estimator_
     y_pred = best_model.predict(X_test)
@@ -227,19 +269,33 @@ def optimize_random_subspace(X_train, y_train, X_test, y_test, cv_folds, param_g
     print("RANDOM SUBSPACE OPTİMİZASYONU")
     print("="*50)
     
-    base = DecisionTreeClassifier(random_state=RANDOM_SEED)
+    # ÖNEMLİ: max_depth parametresi olmadan ağaçlar çok derin olur ve optimizasyon çok uzun sürer!
+    base = DecisionTreeClassifier(
+        max_depth=MAX_DEPTH,
+        min_samples_split=MIN_SAMPLES_SPLIT,
+        min_samples_leaf=MIN_SAMPLES_LEAF,
+        random_state=RANDOM_SEED
+    )
+    # GridSearchCV seviyesinde paralelleştirme yapacağız, bu yüzden BaggingClassifier'da n_jobs=1
     model = BaggingClassifier(
         estimator=base, bootstrap=False, bootstrap_features=True,
-        random_state=RANDOM_SEED, n_jobs=N_JOBS
+        random_state=RANDOM_SEED, n_jobs=1
     )
     
     print(f"Grid Search başlatılıyor... (CV={cv_folds})")
     print(f"Parametre alanı: {param_grid}")
+    print(f"max_depth={MAX_DEPTH} ile DecisionTree kullanılıyor")
     
+    # GridSearchCV seviyesinde paralelleştirme yapıyoruz
+    # verbose=1: paralel işlemlerde daha temiz çıktı (verbose=2 çıktıları karıştırabilir)
     grid_search = GridSearchCV(
-        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=2, n_jobs=1
+        model, param_grid, cv=cv_folds, scoring='accuracy', verbose=1, n_jobs=-1
     )
+    
+    start_time = time.time()
     grid_search.fit(X_train, y_train)
+    elapsed_time = time.time() - start_time
+    print(f"\n⏱️  Optimizasyon süresi: {elapsed_time:.1f} saniye ({elapsed_time/60:.1f} dakika)")
     
     best_model = grid_search.best_estimator_
     y_pred = best_model.predict(X_test)

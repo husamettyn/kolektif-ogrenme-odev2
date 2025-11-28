@@ -4,3 +4,5 @@ __pycache__/
 **.parquet
 .cursorrules
 artifacts/
+
+datasets/

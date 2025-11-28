@@ -10,6 +10,7 @@ Bu script:
 Not: Random Subspace, Bagging'in max_features < 1.0 ve bootstrap=False versiyonudur.
 """
 
+import argparse
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,19 +29,29 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 
 # Sabit parametreler - Random Subspace için özellik alt kümesi seçimi
 RANDOM_SEED = 42
-# Optimizasyon sonuçlarına göre veri setine özel parametreler (optimizing.txt'den)
-# Başlık: max_features=0.7, n_estimators=50
-# Özet: max_features=0.7, n_estimators=200
-# Birleştirilmiş: max_features=0.5, n_estimators=100
-PARAMS_BY_DATASET = {
-    'title': {'n_estimators': 50, 'max_features': 0.7},
-    'abstract': {'n_estimators': 200, 'max_features': 0.7},
-    'concat': {'n_estimators': 100, 'max_features': 0.5}
+MODEL_NAME = "Random Subspace"
+# Optimizasyon sonuçlarına göre embed boyutuna özel parametreler
+PARAMS_BY_EMBED_SIZE = {
+    128: {
+        'title': {'n_estimators': 200, 'max_features': 0.7},
+        'abstract': {'n_estimators': 200, 'max_features': 0.7},
+        'concat': {'n_estimators': 200, 'max_features': 0.5},  # optimizing.txt verisine göre varsayılan
+    },
+    256: {
+        'title': {'n_estimators': 50, 'max_features': 0.7},
+        'abstract': {'n_estimators': 200, 'max_features': 0.7},
+        'concat': {'n_estimators': 100, 'max_features': 0.5},
+    },
+    1024: {
+        'title': {'n_estimators': 100, 'max_features': 0.7},
+        'abstract': {'n_estimators': 200, 'max_features': 0.3},
+        'concat': {'n_estimators': 200, 'max_features': 0.5},
+    },
 }
 MAX_SAMPLES = 1.0       # Tüm örnekleri kullan
 BOOTSTRAP = False       # Örnekleme yapma (sadece özellik seçimi)
 BOOTSTRAP_FEATURES = True  # Özellik alt kümesi seçimi
-N_JOBS = -1
+N_JOBS = 11
 
 # Decision Tree parametreleri (ağaç derinliğini sınırlamak için - performans için kritik!)
 # Optimizasyon sırasında max_depth=20 kullanıldı
@@ -58,19 +69,42 @@ DATASET_PALETTE = {
 }
 
 
-def load_embedding_data(embed_type):
-    train_file = os.path.join(DATASET_DIR, f"train_{embed_type}_embeddings.npz")
-    test_file = os.path.join(DATASET_DIR, f"test_{embed_type}_embeddings.npz")
+def parse_args():
+    """Komut satırı argümanlarını okur."""
+    parser = argparse.ArgumentParser(
+        description="Random Subspace ile tez yılı tahmini (hazır embedding setleriyle)."
+    )
+    parser.add_argument(
+        "--dataset",
+        default=DATASET_DIR,
+        help="`train_*.npz` ve `test_*.npz` dosyalarının bulunduğu dizin (varsayılan: dataset).",
+    )
+    parser.add_argument(
+        "--embed-size",
+        type=int,
+        default=256,
+        choices=sorted(PARAMS_BY_EMBED_SIZE.keys()),
+        help="Optimize parametrelerin kullanılacağı embed boyutu.",
+    )
+    return parser.parse_args()
+
+
+def load_embedding_data(embed_type, dataset_dir):
+    train_file = os.path.join(dataset_dir, f"train_{embed_type}_embeddings.npz")
+    test_file = os.path.join(dataset_dir, f"test_{embed_type}_embeddings.npz")
     train_data = np.load(train_file)
     test_data = np.load(test_file)
     return (train_data['embeddings'], train_data['years'],
             test_data['embeddings'], test_data['years'])
 
 
-def train_model(X_train, y_train, embed_type):
+def train_model(X_train, y_train, embed_type, embed_size):
     """Random Subspace modeli eğitir (özellik alt kümesi yöntemi)."""
-    # Veri setine özel parametreleri al
-    params = PARAMS_BY_DATASET.get(embed_type, {'n_estimators': 100, 'max_features': 0.5})
+    # Embed boyutuna özel parametreleri al
+    try:
+        params = PARAMS_BY_EMBED_SIZE[embed_size][embed_type]
+    except KeyError:
+        raise ValueError(f"{embed_size} için {embed_type} parametresi tanımlı değil.")
     
     # ÖNEMLİ: max_depth parametresi olmadan ağaçlar çok derin olur ve eğitim çok uzun sürer!
     base_estimator = DecisionTreeClassifier(
@@ -298,8 +332,18 @@ def plot_dataset_error_overview(all_results, output_dir, embed_names):
     plt.savefig(os.path.join(output_dir, "dataset_error_overview.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
-def save_results(all_results, output_dir):
+def save_results(all_results, output_dir, embed_size, dataset_dir, timestamp):
+    resolved_dataset_dir = os.path.abspath(dataset_dir)
     summary = {
+        "_meta": {
+            "model": MODEL_NAME,
+            "embed_size": embed_size,
+            "dataset_dir": resolved_dataset_dir,
+            "output_dir": os.path.abspath(output_dir),
+            "timestamp": timestamp,
+        }
+    }
+    summary.update({
         et: {
             'accuracy': r['metrics']['accuracy'],
             'f1_macro': r['metrics']['f1_macro'],
@@ -310,12 +354,20 @@ def save_results(all_results, output_dir):
             'rmse': r['metrics']['rmse']
         }
         for et, r in all_results.items()
-    }
+    })
     
     with open(os.path.join(output_dir, "metrics_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     
     report = f"""# Random Subspace Sonuçları
+
+## Deney Bilgileri
+| Bilgi | Değer |
+|-------|-------|
+| dataset_dir | {resolved_dataset_dir} |
+| embed_size | {embed_size} |
+| output_dir | {os.path.abspath(output_dir)} |
+| timestamp | {timestamp} |
 
 ## Model Parametreleri
 | Parametre | Değer |
@@ -335,7 +387,8 @@ def save_results(all_results, output_dir):
 | Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
 |----------|----------|------------|---------------|-----------|--------|-----|------|
 """
-    for et, m in summary.items():
+    for et in all_results.keys():
+        m = summary[et]
         report += (
             f"| {et} | {m['accuracy']:.4f} | {m['f1_macro']:.4f} | {m['f1_weighted']:.4f} | "
             f"{m['precision_macro']:.4f} | {m['recall_macro']:.4f} | {m['mae']:.2f} | {m['rmse']:.2f} |\n"
@@ -383,6 +436,12 @@ def main():
     print("RANDOM SUBSPACE MODEL EĞİTİMİ VE DEĞERLENDİRMESİ")
     print("=" * 60)
     
+    args = parse_args()
+    dataset_dir = args.dataset
+    embed_size = args.embed_size
+    print(f"Kullanılan veri dizini: {dataset_dir}")
+    print(f"Embed boyutu: {embed_size}")
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_dir = os.path.join(ARTIFACTS_DIR, f"{timestamp}_random_subspace")
     os.makedirs(output_dir, exist_ok=True)
@@ -396,11 +455,11 @@ def main():
         print(f"\n{'='*60}\n{embed_names[embed_type].upper()} VERİSETİ\n{'='*60}")
         
         print("\n1. Veri yükleniyor...")
-        X_train, y_train, X_test, y_test = load_embedding_data(embed_type)
+        X_train, y_train, X_test, y_test = load_embedding_data(embed_type, dataset_dir)
         print(f"   Train: {X_train.shape}, Test: {X_test.shape}")
         
         print("\n2. Model eğitiliyor...")
-        model = train_model(X_train, y_train, embed_type)
+        model = train_model(X_train, y_train, embed_type, embed_size)
         
         print("\n3. Model değerlendiriliyor...")
         metrics = evaluate_model(model, X_test, y_test)
@@ -427,7 +486,7 @@ def main():
         all_results[embed_type] = {'metrics': metrics, 'model_path': model_path}
     
     print(f"\n{'='*60}\nSONUÇLAR KAYDEDİLİYOR\n{'='*60}")
-    save_results(all_results, output_dir)
+    save_results(all_results, output_dir, embed_size, dataset_dir, timestamp)
     plot_comparison(all_results, output_dir)
     plot_dataset_error_overview(all_results, output_dir, embed_names)
     print(f"\n✓ Tüm sonuçlar kaydedildi: {output_dir}/")

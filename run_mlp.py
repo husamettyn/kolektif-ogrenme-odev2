@@ -39,6 +39,7 @@ plt.rcParams["font.family"] = "DejaVu Sans"
 
 # Sabit parametreler
 RANDOM_SEED = 42
+MODEL_NAME = "PyTorch MLP"
 DATASET_DIR = "dataset"
 ARTIFACTS_DIR = "artifacts"
 VAL_SPLIT = 0.1
@@ -57,10 +58,19 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATASET_PALETTE = {"title": "#2e8b57", "abstract": "#1f77b4", "concat": "#8e44ad"}
 
 
+def infer_embed_size_from_path(dataset_dir: str) -> Optional[int]:
+    """dataset/128 gibi yollardan embed boyutunu çıkarır."""
+    base = os.path.basename(os.path.normpath(dataset_dir))
+    digits = "".join(ch for ch in base if ch.isdigit())
+    return int(digits) if digits else None
+
+
 @dataclass
 class TrainingConfig:
     """Komut satırından okunacak eğitim ayarları."""
 
+    dataset_dir: str
+    embed_size: Optional[int]
     hidden_layers: Tuple[int, ...]
     dropout: float
     epochs: int
@@ -155,10 +165,27 @@ def parse_args() -> TrainingConfig:
         default=1e-5,
         help="Scheduler için minimum öğrenme oranı",
     )
+    parser.add_argument(
+        "--embed-size",
+        type=int,
+        default=None,
+        help="Kullanılan embed boyutu (dataset yolundan türetilecekse boş bırakılabilir).",
+    )
+    parser.add_argument(
+        "--dataset",
+        default=DATASET_DIR,
+        help="`train_*.npz` ve `test_*.npz` dosyalarının bulunduğu dizin (varsayılan: dataset).",
+    )
 
     args = parser.parse_args()
     grad_clip = None if args.grad_clip_norm <= 0 else args.grad_clip_norm
+    inferred_embed = args.embed_size
+    if inferred_embed is None:
+        inferred_embed = infer_embed_size_from_path(args.dataset)
+
     return TrainingConfig(
+        dataset_dir=args.dataset,
+        embed_size=inferred_embed,
         hidden_layers=tuple(args.hidden_dims),
         dropout=args.dropout,
         epochs=args.epochs,
@@ -209,10 +236,10 @@ class ThesisMLP(nn.Module):
         return self.network(x)
 
 
-def load_embedding_data(embed_type):
+def load_embedding_data(embed_type, dataset_dir):
     """Embedding verisetini yükler."""
-    train_file = os.path.join(DATASET_DIR, f"train_{embed_type}_embeddings.npz")
-    test_file = os.path.join(DATASET_DIR, f"test_{embed_type}_embeddings.npz")
+    train_file = os.path.join(dataset_dir, f"train_{embed_type}_embeddings.npz")
+    test_file = os.path.join(dataset_dir, f"test_{embed_type}_embeddings.npz")
 
     train_data = np.load(train_file)
     test_data = np.load(test_file)
@@ -621,9 +648,18 @@ def plot_dataset_error_overview(all_results, output_dir, embed_names):
     plt.close()
 
 
-def save_results(all_results, output_dir, config: TrainingConfig):
+def save_results(all_results, output_dir, config: TrainingConfig, dataset_dir: str, embed_size: Optional[int], timestamp: str):
     """Tüm sonuçları kaydeder."""
-    summary = {}
+    resolved_dataset_dir = os.path.abspath(dataset_dir)
+    summary = {
+        "_meta": {
+            "model": MODEL_NAME,
+            "embed_size": embed_size,
+            "dataset_dir": resolved_dataset_dir,
+            "output_dir": os.path.abspath(output_dir),
+            "timestamp": timestamp,
+        }
+    }
     for embed_type, results in all_results.items():
         summary[embed_type] = {
             "accuracy": results["metrics"]["accuracy"],
@@ -638,7 +674,17 @@ def save_results(all_results, output_dir, config: TrainingConfig):
     with open(os.path.join(output_dir, "metrics_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
+    embed_size_text = embed_size if embed_size is not None else "unknown"
     comparison_text = """# PyTorch MLP Sonuçları
+
+## Deney Bilgileri
+
+| Bilgi | Değer |
+|-------|-------|
+| dataset_dir | {} |
+| embed_size | {} |
+| output_dir | {} |
+| timestamp | {} |
 
 ## Model Parametreleri
 
@@ -659,6 +705,10 @@ def save_results(all_results, output_dir, config: TrainingConfig):
 | Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
 |----------|----------|------------|---------------|-----------|--------|-----|------|
 """.format(
+        resolved_dataset_dir,
+        embed_size_text,
+        os.path.abspath(output_dir),
+        timestamp,
         config.hidden_layers,
         config.dropout,
         config.epochs,
@@ -670,7 +720,8 @@ def save_results(all_results, output_dir, config: TrainingConfig):
         RANDOM_SEED,
     )
 
-    for embed_type, metrics in summary.items():
+    for embed_type in all_results.keys():
+        metrics = summary[embed_type]
         comparison_text += "| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} | {:.2f} |\n".format(
             embed_type,
             metrics["accuracy"],
@@ -745,6 +796,12 @@ def main():
         f"lr: {config.learning_rate}, hidden_layers: {config.hidden_layers}"
     )
 
+    dataset_dir = config.dataset_dir
+    resolved_dataset_dir = os.path.abspath(dataset_dir)
+    embed_size = config.embed_size
+    print(f"Kullanılan veri dizini: {resolved_dataset_dir}")
+    print(f"Embed boyutu: {embed_size if embed_size is not None else 'unknown'}")
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_dir = os.path.join(ARTIFACTS_DIR, f"{timestamp}_mlp")
     os.makedirs(output_dir, exist_ok=True)
@@ -761,7 +818,7 @@ def main():
         print(f"{'='*60}")
 
         print("\n1. Veri yükleniyor...")
-        X_train, y_train, X_test, y_test = load_embedding_data(embed_type)
+        X_train, y_train, X_test, y_test = load_embedding_data(embed_type, dataset_dir)
         print(f"   Train: {X_train.shape}, Test: {X_test.shape}")
 
         y_train_enc, y_test_enc, label_encoder = encode_labels(y_train, y_test)
@@ -841,7 +898,7 @@ def main():
     print("SONUÇLAR KAYDEDİLİYOR")
     print(f"{'='*60}")
 
-    save_results(all_results, output_dir, config)
+    save_results(all_results, output_dir, config, resolved_dataset_dir, embed_size, timestamp)
     plot_comparison(all_results, output_dir)
     plot_dataset_error_overview(all_results, output_dir, embed_names)
 

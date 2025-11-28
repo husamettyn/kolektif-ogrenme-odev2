@@ -116,11 +116,19 @@ def sample_theses(dataset, theses_by_year):
         # Seçilen tezleri karıştır
         random.shuffle(selected_indices)
         
-        # Train ve test olarak ayır
-        train_count = min(TRAIN_PER_YEAR, len(selected_indices) // 2)
+        # Train ve test olarak ayır (eşit olarak)
+        # Eğer yeterli tez varsa TRAIN_PER_YEAR ve TEST_PER_YEAR kadar ayır
+        # Eğer yetersizse, mevcut tezleri eşit olarak böl
+        if len(selected_indices) >= THESES_PER_YEAR:
+            train_count = TRAIN_PER_YEAR
+            test_count = TEST_PER_YEAR
+        else:
+            # Yetersiz tez varsa eşit olarak böl
+            train_count = len(selected_indices) // 2
+            test_count = len(selected_indices) - train_count
         
         train_indices = selected_indices[:train_count]
-        test_indices = selected_indices[train_count:train_count + TEST_PER_YEAR]
+        test_indices = selected_indices[train_count:train_count + test_count]
         
         # Veri ekle
         for idx in train_indices:

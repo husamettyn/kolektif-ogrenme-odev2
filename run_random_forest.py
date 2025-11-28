@@ -8,6 +8,7 @@ Bu script:
 4. Sonuçları ve grafikleri artifacts/ klasörüne kaydeder
 """
 
+import argparse
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -30,18 +31,28 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 
 # Sabit parametreler
 RANDOM_SEED = 42
-# Optimizasyon sonuçlarına göre veri setine özel parametreler (optimizing.txt'den)
-# Başlık: max_depth=30, n_estimators=200
-# Özet: max_depth=20, n_estimators=200
-# Birleştirilmiş: max_depth=10, n_estimators=200
-PARAMS_BY_DATASET = {
-    'title': {'n_estimators': 200, 'max_depth': 30},
-    'abstract': {'n_estimators': 200, 'max_depth': 20},
-    'concat': {'n_estimators': 200, 'max_depth': 10}
+MODEL_NAME = "Random Forest"
+# Embed boyutuna göre optimize edilmiş hiperparametreler
+PARAMS_BY_EMBED_SIZE = {
+    128: {
+        'title': {'n_estimators': 200, 'max_depth': 10},
+        'abstract': {'n_estimators': 200, 'max_depth': 10},
+        'concat': {'n_estimators': 200, 'max_depth': 30},
+    },
+    256: {
+        'title': {'n_estimators': 200, 'max_depth': 30},
+        'abstract': {'n_estimators': 200, 'max_depth': 20},
+        'concat': {'n_estimators': 200, 'max_depth': 10},
+    },
+    1024: {
+        'title': {'n_estimators': 100, 'max_depth': 20},
+        'abstract': {'n_estimators': 200, 'max_depth': 30},
+        'concat': {'n_estimators': 200, 'max_depth': 20},
+    },
 }
 MIN_SAMPLES_SPLIT = 2
 MIN_SAMPLES_LEAF = 1
-N_JOBS = -1         # Tüm CPU çekirdeklerini kullan
+N_JOBS = 11         # Tüm CPU çekirdeklerini kullan
 
 # Dizinler
 DATASET_DIR = "dataset"
@@ -55,7 +66,27 @@ DATASET_PALETTE = {
 }
 
 
-def load_embedding_data(embed_type):
+def parse_args():
+    """Komut satırı argümanlarını okur."""
+    parser = argparse.ArgumentParser(
+        description="Random Forest ile tez yılı tahmini (hazır embedding setleriyle)."
+    )
+    parser.add_argument(
+        "--dataset",
+        default=DATASET_DIR,
+        help="`train_*.npz` ve `test_*.npz` dosyalarının bulunduğu dizin (varsayılan: dataset).",
+    )
+    parser.add_argument(
+        "--embed-size",
+        type=int,
+        default=256,
+        choices=sorted(PARAMS_BY_EMBED_SIZE.keys()),
+        help="Optimize edilmiş hiperparametrelerin kullanılacağı embed boyutu.",
+    )
+    return parser.parse_args()
+
+
+def load_embedding_data(embed_type, dataset_dir):
     """
     Embedding verisetini yükler.
     
@@ -65,8 +96,8 @@ def load_embedding_data(embed_type):
     Returns:
         tuple: (X_train, y_train, X_test, y_test)
     """
-    train_file = os.path.join(DATASET_DIR, f"train_{embed_type}_embeddings.npz")
-    test_file = os.path.join(DATASET_DIR, f"test_{embed_type}_embeddings.npz")
+    train_file = os.path.join(dataset_dir, f"train_{embed_type}_embeddings.npz")
+    test_file = os.path.join(dataset_dir, f"test_{embed_type}_embeddings.npz")
     
     train_data = np.load(train_file)
     test_data = np.load(test_file)
@@ -79,7 +110,7 @@ def load_embedding_data(embed_type):
     )
 
 
-def train_model(X_train, y_train, embed_type):
+def train_model(X_train, y_train, embed_type, embed_size):
     """
     Random Forest modeli eğitir.
     
@@ -91,8 +122,11 @@ def train_model(X_train, y_train, embed_type):
     Returns:
         RandomForestClassifier: Eğitilmiş model
     """
-    # Veri setine özel parametreleri al
-    params = PARAMS_BY_DATASET.get(embed_type, {'n_estimators': 100, 'max_depth': 20})
+    # Embed boyutuna özel parametreleri al
+    try:
+        params = PARAMS_BY_EMBED_SIZE[embed_size][embed_type]
+    except KeyError:
+        raise ValueError(f"{embed_size} için {embed_type} parametresi tanımlı değil.")
     
     model = RandomForestClassifier(
         n_estimators=params['n_estimators'],
@@ -397,7 +431,7 @@ def plot_dataset_error_overview(all_results, output_dir, embed_names):
     plt.savefig(os.path.join(output_dir, "dataset_error_overview.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
-def save_results(all_results, output_dir):
+def save_results(all_results, output_dir, embed_size, dataset_dir, timestamp):
     """
     Tüm sonuçları kaydeder.
     
@@ -405,8 +439,17 @@ def save_results(all_results, output_dir):
         all_results: Tüm model sonuçları
         output_dir: Çıktı dizini
     """
+    resolved_dataset_dir = os.path.abspath(dataset_dir)
     # Özet metrikleri kaydet
-    summary = {}
+    summary = {
+        "_meta": {
+            "model": MODEL_NAME,
+            "embed_size": embed_size,
+            "dataset_dir": resolved_dataset_dir,
+            "output_dir": os.path.abspath(output_dir),
+            "timestamp": timestamp,
+        }
+    }
     for embed_type, results in all_results.items():
         summary[embed_type] = {
             'accuracy': results['metrics']['accuracy'],
@@ -424,6 +467,15 @@ def save_results(all_results, output_dir):
     # Karşılaştırma tablosu oluştur
     comparison_text = """# Random Forest Sonuçları
 
+## Deney Bilgileri
+
+| Bilgi | Değer |
+|-------|-------|
+| dataset_dir | {} |
+| embed_size | {} |
+| output_dir | {} |
+| timestamp | {} |
+
 ## Model Parametreleri
 
 | Parametre | Değer |
@@ -438,9 +490,18 @@ def save_results(all_results, output_dir):
 
 | Veriseti | Accuracy | F1 (Macro) | F1 (Weighted) | Precision | Recall | MAE | RMSE |
 |----------|----------|------------|---------------|-----------|--------|-----|------|
-""".format(MIN_SAMPLES_SPLIT, MIN_SAMPLES_LEAF, RANDOM_SEED)
+""".format(
+        resolved_dataset_dir,
+        embed_size,
+        os.path.abspath(output_dir),
+        timestamp,
+        MIN_SAMPLES_SPLIT,
+        MIN_SAMPLES_LEAF,
+        RANDOM_SEED,
+    )
     
-    for embed_type, metrics in summary.items():
+    for embed_type in all_results.keys():
+        metrics = summary[embed_type]
         comparison_text += "| {} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.4f} | {:.2f} | {:.2f} |\n".format(
             embed_type,
             metrics['accuracy'],
@@ -512,6 +573,12 @@ def main():
     print("RANDOM FOREST MODEL EĞİTİMİ VE DEĞERLENDİRMESİ")
     print("=" * 60)
     
+    args = parse_args()
+    dataset_dir = args.dataset
+    embed_size = args.embed_size
+    print(f"Kullanılan veri dizini: {dataset_dir}")
+    print(f"Embed boyutu: {embed_size}")
+
     # Çıktı dizini oluştur (timestamp ile)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_dir = os.path.join(ARTIFACTS_DIR, f"{timestamp}_random_forest")
@@ -535,12 +602,12 @@ def main():
         
         # Veriyi yükle
         print("\n1. Veri yükleniyor...")
-        X_train, y_train, X_test, y_test = load_embedding_data(embed_type)
+        X_train, y_train, X_test, y_test = load_embedding_data(embed_type, dataset_dir)
         print(f"   Train: {X_train.shape}, Test: {X_test.shape}")
         
         # Model eğit
         print("\n2. Model eğitiliyor...")
-        model = train_model(X_train, y_train, embed_type)
+        model = train_model(X_train, y_train, embed_type, embed_size)
         
         # Değerlendir
         print("\n3. Model değerlendiriliyor...")
@@ -591,7 +658,7 @@ def main():
     print("SONUÇLAR KAYDEDİLİYOR")
     print(f"{'='*60}")
     
-    save_results(all_results, output_dir)
+    save_results(all_results, output_dir, embed_size, dataset_dir, timestamp)
     plot_comparison(all_results, output_dir)
     plot_dataset_error_overview(all_results, output_dir, embed_names)
     
